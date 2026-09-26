@@ -1180,6 +1180,56 @@ check('死胡同往返：总耗时 2+2+3+3=10', rt4.status === 'ok' && rt4.total
 check('路线重复经过大门与通道（V1→V2 经大门）',
   rt4.segments[1].path.join('→') === 'X→大门→Y' && rt4.segments[1].minutes === 5);
 
+console.log('作业路线：大分钟精确整数计算（累加不舍入）：');
+// 门→中继 9007199254740991 分钟（安全整数上限）、中继→阀位 2 分钟：
+// 单程 9007199254740993，单阀往返精确为 18014398509481986；
+// 用 Number 累加会把单程舍入为 9007199254740992、往返误算为 18014398509481984
+const bigPsg = {
+  waypoints: ['门', '中继', '阀位'],
+  passages: [
+    { from: '门', to: '中继', minutes: 9007199254740991 },
+    { from: '中继', to: '阀位', minutes: 2 },
+  ],
+  valveWaypoints: { V1: '阀位' },
+};
+const rtBig = planRoute(['V1'], '门', bigPsg);
+check('大分钟单阀往返总耗时精确为 18014398509481986（完整十进制文本）',
+  rtBig.status === 'ok' && rtBig.totalMinutesText === '18014398509481986');
+check('大分钟逐段耗时精确（去程 = 返程 = 9007199254740993）',
+  rtBig.status === 'ok' &&
+  rtBig.segments.map((s) => s.minutesText).join(',') === '9007199254740993,9007199254740993');
+check('大分钟实际通道路点正确',
+  rtBig.status === 'ok' &&
+  rtBig.segments[0].path.join('→') === '门→中继→阀位' &&
+  rtBig.segments[1].path.join('→') === '阀位→中继→门');
+check('大分钟数值字段超出安全整数范围（精确值以文本字段为准）',
+  rtBig.status === 'ok' && !Number.isSafeInteger(rtBig.totalMinutes) &&
+  rtBig.segments.every((s) => !Number.isSafeInteger(s.minutes)));
+check('普通分钟结果保持兼容：文本字段与数值字段一致',
+  rt1.status === 'ok' && rt1.totalMinutesText === '24' &&
+  rt1.segments.map((s) => s.minutesText).join(',') === '7,5,12');
+
+console.log('作业路线：大分钟下多阀顺序与同耗时字典序：');
+// 中继下挂两个阀位：V1@阀位A(2)、V2@阀位B(3)；两种访问顺序精确总耗时相同
+// 9007199254740993 + 5 + 9007199254740994 = 18014398509481992，同分取 [V1,V2]
+const big2Psg = {
+  waypoints: ['门', '中继', '阀位A', '阀位B'],
+  passages: [
+    { from: '门', to: '中继', minutes: 9007199254740991 },
+    { from: '中继', to: '阀位A', minutes: 2 },
+    { from: '中继', to: '阀位B', minutes: 3 },
+  ],
+  valveWaypoints: { V1: '阀位A', V2: '阀位B' },
+};
+const rtBig2 = planRoute(['V2', 'V1'], '门', big2Psg);
+check('大分钟两阀总耗时精确为 18014398509481992',
+  rtBig2.status === 'ok' && rtBig2.totalMinutesText === '18014398509481992');
+check('大分钟同耗时仍按阀门编号字典序取 [V1,V2]',
+  rtBig2.status === 'ok' && rtBig2.valveOrder.join(',') === 'V1,V2');
+check('大分钟两阀逐段耗时精确（三段）',
+  rtBig2.status === 'ok' &&
+  rtBig2.segments.map((s) => s.minutesText).join(',') === '9007199254740993,5,9007199254740994');
+
 console.log('作业路线：映射缺失：');
 const missPsg = { waypoints: passage.waypoints, passages: passage.passages, valveWaypoints: { V1: 'N1井' } };
 const rt5 = planRoute(['V1', 'V2'], '大门', missPsg);
@@ -1253,7 +1303,7 @@ console.log('作业路线：无需关阀（空方案）：');
 const rt8 = planRoute([], '大门');
 check('空必访清单返回 ok、总耗时 0', rt8.status === 'ok' &&
   rt8.requiredValveCount === 0 && rt8.valveOrder.length === 0 &&
-  rt8.segments.length === 0 && rt8.totalMinutes === 0);
+  rt8.segments.length === 0 && rt8.totalMinutes === 0 && rt8.totalMinutesText === '0');
 
 console.log('作业路线：作业通道 JSON 解析校验：');
 const good = solver.parseWorkPassage({
@@ -1284,6 +1334,18 @@ const eFloat = solver.parseWorkPassage({
   valveWaypoints: {},
 });
 check('minutes 小数被拒绝', eFloat.errors.some((e) => e.includes('正整数')));
+const eBigOk = solver.parseWorkPassage({
+  waypoints: ['a', 'b'],
+  passages: [{ from: 'a', to: 'b', minutes: 9007199254740991 }],
+  valveWaypoints: {},
+});
+check('minutes 取安全整数上限（9007199254740991）被接受', !!eBigOk.passage && eBigOk.errors.length === 0);
+const eBigToo = solver.parseWorkPassage({
+  waypoints: ['a', 'b'],
+  passages: [{ from: 'a', to: 'b', minutes: 9007199254740992 }],
+  valveWaypoints: {},
+});
+check('minutes 超出安全整数范围被拒绝', !eBigToo.passage && eBigToo.errors.some((e) => e.includes('正整数')));
 const eEnd = solver.parseWorkPassage({
   waypoints: ['a'],
   passages: [{ from: 'a', to: 'z', minutes: 1 }],

@@ -207,7 +207,9 @@ app.innerHTML = `
         先在右上「关阀方案搜索结果」中<strong>选择一个方案</strong>（默认推荐方案），以该方案待关闭阀门为必访点
         （最多 ${MAX_ROUTE_VALVES} 个），另填<strong>作业通道 JSON</strong>（路点、无向通道及正整数步行分钟、各阀门对应路点）
         与<strong>出发路点</strong>，规划从出发点出发、依次关闭全部必访阀门并返回的总步行时间最少完整路线
-        （允许重复经过路点与通道；同耗时按关阀操作的阀门编号序列字典序取舍）。测算不修改拓扑与阀门登记状态。
+        （允许重复经过路点与通道；同耗时按关阀操作的阀门编号序列字典序取舍）。
+        通道分钟支持安全整数范围内的任意正整数，分段与总耗时按精确整数计算、以完整十进制展示（超大分钟累加不舍入）。
+        测算不修改拓扑与阀门登记状态。
       </p>
       <label>
         作业通道 JSON（waypoints / passages / valveWaypoints）
@@ -1469,7 +1471,7 @@ function renderClosureRoute(result: ClosureRouteResult): void {
         <td>${escapeHtml(seg.from)} → ${escapeHtml(seg.to)}</td>
         <td>${action}</td>
         <td>${seg.path.map((p) => escapeHtml(p)).join(' → ')}</td>
-        <td class="num"><strong>${seg.minutes}</strong></td>
+        <td class="num"><strong>${seg.minutesText}</strong></td>
       </tr>`;
     })
     .join('');
@@ -1477,7 +1479,7 @@ function renderClosureRoute(result: ClosureRouteResult): void {
   closureRouteResultEl.innerHTML = `
     <div class="banner success">
       已选方案的 ${result.requiredValveCount} 个必访阀门全部可达；最优完整路线总步行
-      <strong>${result.totalMinutes}</strong> 分钟（从 <code>${escapeHtml(result.start)}</code> 出发并返回）。
+      <strong>${result.totalMinutesText}</strong> 分钟（从 <code>${escapeHtml(result.start)}</code> 出发并返回）。
       同耗时按关阀操作的阀门编号序列字典序取最小。
     </div>
     <h3>阀门操作顺序</h3>
@@ -1499,13 +1501,15 @@ function renderClosureRoute(result: ClosureRouteResult): void {
       <tfoot>
         <tr>
           <td colspan="4" class="num"><strong>总耗时</strong></td>
-          <td class="num"><strong>${result.totalMinutes}</strong></td>
+          <td class="num"><strong>${result.totalMinutesText}</strong></td>
         </tr>
       </tfoot>
     </table>
     <p class="hint">
       各段内部均取路点间最短通行距离（Floyd–Warshall），阀门访问顺序由子集动态规划求得，
-      允许重复经过路点与通道；路线测算<strong>不修改拓扑 JSON、阀门登记状态与作业通道输入</strong>。
+      允许重复经过路点与通道；分段与总耗时全程按<strong>精确整数</strong>计算并以完整十进制展示，
+      超大分钟（如接近 9007199254740991 的通道分钟）累加也不会舍入；
+      路线测算<strong>不修改拓扑 JSON、阀门登记状态与作业通道输入</strong>。
     </p>`;
 }
 
