@@ -1314,6 +1314,61 @@ check('路线测算不修改拓扑', JSON.stringify(routeNet) === beforeRouteNet
 check('路线测算不修改作业通道输入', JSON.stringify(passage) === beforeRoutePsg);
 check('路线测算不修改待关闭阀门入参数组', closedInput.join(',') === 'V2,V1');
 
+console.log('作业路线：大分钟精确整数（超出 Number 安全整数范围）：');
+// 「门→中继」9007199254740991 分钟（安全整数上限）、「中继→阀位」2 分钟：
+// 单程 9007199254740993、单阀往返 18014398509481986，均超出 Number 安全整数范围；
+// Number 累加会舍入（9007199254740991 + 2 → 9007199254740992），必须按精确整数计算。
+const bigPsg = {
+  waypoints: ['门', '中继', '阀位'],
+  passages: [
+    { from: '门', to: '中继', minutes: 9007199254740991 },
+    { from: '中继', to: '阀位', minutes: 2 },
+  ],
+  valveWaypoints: { V1: '阀位' },
+};
+const rtBig = planRoute(['V1'], '门', bigPsg);
+check('单阀往返精确为 18014398509481986（完整十进制字符串）',
+  rtBig.status === 'ok' && rtBig.totalMinutes === '18014398509481986');
+check('逐段耗时精确（去程 / 返程各 9007199254740993）',
+  rtBig.segments.map((s) => s.minutes).join(',') === '9007199254740993,9007199254740993');
+check('大分钟路线实际通道路点正确',
+  rtBig.segments[0].path.join('→') === '门→中继→阀位' &&
+  rtBig.segments[1].path.join('→') === '阀位→中继→门');
+// 分段恰为安全整数上限 9007199254740991 时仍返回 number，往返总和超出范围才返回字符串
+const maxSafePsg = {
+  waypoints: ['门', '阀位'],
+  passages: [{ from: '门', to: '阀位', minutes: 9007199254740991 }],
+  valveWaypoints: { V1: '阀位' },
+};
+const rtMax = planRoute(['V1'], '门', maxSafePsg);
+check('分段恰为 9007199254740991（安全整数上限）保持 number',
+  rtMax.status === 'ok' && rtMax.segments[0].minutes === 9007199254740991 &&
+  rtMax.segments[1].minutes === 9007199254740991);
+check('总耗时 18014398509481982 超出安全范围，返回完整十进制字符串',
+  rtMax.totalMinutes === '18014398509481982');
+// 普通分钟输入的结果保持兼容：安全范围内仍为 number（既有断言 rt1.totalMinutes === 24 等已覆盖）
+check('普通分钟结果仍为 number', typeof rt1.totalMinutes === 'number' &&
+  rt1.segments.every((s) => typeof s.minutes === 'number'));
+// 大分钟下的多阀访问顺序优化：门—1—近点，近点—9007199254740991—远点，V1 近、V2 远
+// [V1,V2]：1 + 9007199254740991 + 9007199254740992 = 18014398509481984
+// [V2,V1]：9007199254740992 + 9007199254740991 + 1 = 18014398509481984（同耗时）
+// 同耗时按阀门编号序列字典序取 [V1,V2]
+const bigDpPsg = {
+  waypoints: ['门', '近点', '远点'],
+  passages: [
+    { from: '门', to: '近点', minutes: 1 },
+    { from: '近点', to: '远点', minutes: 9007199254740991 },
+  ],
+  valveWaypoints: { V1: '近点', V2: '远点' },
+};
+const rtBigDp = planRoute(['V2', 'V1'], '门', bigDpPsg);
+check('大分钟多阀顺序优化总耗时精确（18014398509481984）',
+  rtBigDp.status === 'ok' && rtBigDp.totalMinutes === '18014398509481984');
+check('大分钟等耗时仍按阀门编号序列字典序取舍（[V1,V2]）',
+  rtBigDp.valveOrder.join(',') === 'V1,V2');
+check('大分钟多阀逐段耗时精确',
+  rtBigDp.segments.map((s) => s.minutes).join(',') === '1,9007199254740991,9007199254740992');
+
 // ============ 应急送水站布点 ============
 console.log('应急送水站布点：');
 

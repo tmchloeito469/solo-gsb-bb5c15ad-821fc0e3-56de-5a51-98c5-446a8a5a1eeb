@@ -2153,8 +2153,11 @@ export interface RouteSegment {
   valve: string | null;
   /** 本段实际通行的完整路点序列（含起终点；允许与其他段重复经过路点 / 通道） */
   path: string[];
-  /** 本段步行分钟 */
-  minutes: number;
+  /**
+   * 本段步行分钟（精确值）：不超出 Number 安全整数范围时为 number（与普通分钟
+   * 输入的既有结果一致）；超出时为完整十进制数字字符串，逐位精确、未经舍入。
+   */
+  minutes: number | string;
 }
 
 export interface ClosureRouteQuery {
@@ -2179,8 +2182,11 @@ export interface ClosureRouteOk {
   valveWaypoints: Record<string, string>;
   /** 逐段路线：出发段、阀门间转场段、返程段 */
   segments: RouteSegment[];
-  /** 总步行分钟（各段耗时之和） */
-  totalMinutes: number;
+  /**
+   * 总步行分钟（各段耗时之和的精确值）：不超出 Number 安全整数范围时为 number；
+   * 超出时为完整十进制数字字符串，逐位精确、未经舍入。
+   */
+  totalMinutes: number | string;
 }
 
 /** 必访阀门缺少路点映射。 */
@@ -2287,6 +2293,14 @@ export function parseWorkPassage(raw: unknown): { passage?: WorkPassage; errors:
 }
 
 /**
+ * 精确分钟值的输出形式：不超出 Number 安全整数范围时保留 number（与普通分钟
+ * 输入的既有结果兼容），超出时给完整十进制数字字符串，保证逐位精确、可直接展示。
+ */
+function exactMinutesOutput(value: bigint): number | string {
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString(10);
+}
+
+/**
  * 关阀作业路线：在选定关阀方案的待关闭阀门（必访点，最多 MAX_ROUTE_VALVES 个）上，
  * 以出发路点为起点、沿无向作业通道步行，访问全部必访阀门并返回出发路点的
  * 总步行时间最少的完整路线；允许重复经过路点与通道。
@@ -2296,6 +2310,11 @@ export function parseWorkPassage(raw: unknown): { passage?: WorkPassage; errors:
  * 2. 再用子集动态规划求阀门访问顺序——dp[S][v] 为从出发点出发访问完 S 中阀门
  *    且最后操作 v 的最少耗时，完整路线再加上 v 返回出发点的最短耗时；
  *    同耗时按「关阀操作的阀门编号序列」字典序取最小。
+ * 分钟全程以 BigInt 精确整数累加：单条通道 minutes 已是安全整数，但多段相加
+ * （如「门→中继」9007199254740991 分钟 +「中继→阀位」2 分钟的单阀往返
+ * 18014398509481986 分钟）会超出 Number 安全整数范围，Number 累加会舍入；
+ * 全路点最短路、阀门访问顺序优化与逐段 / 总耗时共用同一套精确计算。
+ * 输出时安全范围内为 number，超出时为完整十进制字符串。
  * 映射缺失、必访阀门超限、关键位置互不可达时分别给出明确状态。
  * 纯函数测算：不修改拓扑 JSON、阀门登记状态与作业通道输入。
  */
@@ -2346,33 +2365,42 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
   // 名称升序的节点次序：等耗时最短路按路点序列字典序取舍
   const nodesByName = [...passage.waypoints].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
-  // 直连矩阵与全源最短路初始化（并行通道取最小分钟；自环不影响正权最短路）
-  const direct: number[][] = Array.from({ length: m }, () => new Array(m).fill(Infinity));
-  const dist: number[][] = Array.from({ length: m }, () => new Array(m).fill(Infinity));
+  // 直连矩阵与全源最短路初始化（并行通道取最小分钟；自环不影响正权最短路）。
+  // 分钟全程以 BigInt 精确累加：单条通道 minutes 已是安全整数，但多段相加可能
+  // 超出 Number 安全整数范围（Number 累加会舍入）；null 表示不可达（替代 Infinity）。
+  const direct: (bigint | null)[][] = Array.from({ length: m }, () => new Array<bigint | null>(m).fill(null));
+  const dist: (bigint | null)[][] = Array.from({ length: m }, () => new Array<bigint | null>(m).fill(null));
   for (let i = 0; i < m; i++) {
-    direct[i][i] = 0;
-    dist[i][i] = 0;
+    direct[i][i] = 0n;
+    dist[i][i] = 0n;
   }
   for (const e of passage.passages) {
     const u = idxOf.get(e.from)!;
     const v = idxOf.get(e.to)!;
     if (u === v) continue; // 自环对正权最短通行距离无意义
-    if (e.minutes < direct[u][v]) {
-      direct[u][v] = e.minutes;
-      direct[v][u] = e.minutes;
+    const w = BigInt(e.minutes);
+    const duv = direct[u][v];
+    if (duv === null || w < duv) {
+      direct[u][v] = w;
+      direct[v][u] = w;
     }
-    if (e.minutes < dist[u][v]) {
-      dist[u][v] = e.minutes;
-      dist[v][u] = e.minutes;
+    const dvu = dist[u][v];
+    if (dvu === null || w < dvu) {
+      dist[u][v] = w;
+      dist[v][u] = w;
     }
   }
-  // Floyd–Warshall 全源最短路
+  // Floyd–Warshall 全源最短路（BigInt 精确相加，不发生 Number 舍入）
   for (let k = 0; k < m; k++) {
     for (let i = 0; i < m; i++) {
-      if (dist[i][k] === Infinity) continue;
+      const dik = dist[i][k];
+      if (dik === null) continue;
       for (let j = 0; j < m; j++) {
-        const via = dist[i][k] + dist[k][j];
-        if (via < dist[i][j]) dist[i][j] = via;
+        const dkj = dist[k][j];
+        if (dkj === null) continue;
+        const via = dik + dkj;
+        const dij = dist[i][j];
+        if (dij === null || via < dij) dist[i][j] = via;
       }
     }
   }
@@ -2391,7 +2419,7 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
   const unreachablePairs: { from: string; to: string }[] = [];
   for (let i = 0; i < locations.length; i++) {
     for (let j = i + 1; j < locations.length; j++) {
-      if (dist[locations[i].point][locations[j].point] === Infinity) {
+      if (dist[locations[i].point][locations[j].point] === null) {
         unreachablePairs.push({ from: locations[i].label, to: locations[j].label });
       }
     }
@@ -2413,11 +2441,14 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
   for (let u = 0; u < m; u++) {
     next[u][u] = u;
     for (let v = 0; v < m; v++) {
-      if (u === v || dist[u][v] === Infinity) continue;
+      const duv = dist[u][v];
+      if (u === v || duv === null) continue;
       for (const wName of nodesByName) {
         const w = idxOf.get(wName)!;
-        if (w === u || direct[u][w] === Infinity) continue;
-        if (direct[u][w] + dist[w][v] === dist[u][v]) {
+        const duw = direct[u][w];
+        if (w === u || duw === null) continue;
+        const dwv = dist[w][v];
+        if (dwv !== null && duw + dwv === duv) {
           next[u][v] = w;
           break;
         }
@@ -2456,10 +2487,11 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
   }
 
   // 子集动态规划：bestCost[mask][last] = 从出发点出发、访问完 mask 中阀门、
-  // 最后操作 last 的最少步行分钟；bestSeq 记录同耗时下字典序最小的完整阀门序列。
+  // 最后操作 last 的最少步行分钟（BigInt 精确值，null 表示不可达）；
+  // bestSeq 记录同耗时下字典序最小的完整阀门序列。
   const size = 1 << n;
-  const bestCost: number[][] = Array.from({ length: size }, () => new Array(n).fill(Infinity));
-  const bestSeq: (string[] | null)[][] = Array.from({ length: size }, () => new Array(n).fill(null));
+  const bestCost: (bigint | null)[][] = Array.from({ length: size }, () => new Array<bigint | null>(n).fill(null));
+  const bestSeq: (string[] | null)[][] = Array.from({ length: size }, () => new Array<string[] | null>(n).fill(null));
   for (let i = 0; i < n; i++) {
     bestCost[1 << i][i] = dist[sIdx][valveIdx[i]];
     bestSeq[1 << i][i] = [required[i]];
@@ -2468,13 +2500,17 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
     for (let last = 0; last < n; last++) {
       if (!(mask & (1 << last)) || (mask & (mask - 1)) === 0) continue; // 单元素集已初始化
       const prevMask = mask ^ (1 << last);
-      let cost = Infinity;
+      let cost: bigint | null = null;
       let seq: string[] | null = null;
       for (let j = 0; j < n; j++) {
         if (!(prevMask & (1 << j))) continue;
-        const candidateCost = bestCost[prevMask][j] + dist[valveIdx[j]][valveIdx[last]];
+        const prevCost = bestCost[prevMask][j];
+        const leg = dist[valveIdx[j]][valveIdx[last]];
+        if (prevCost === null || leg === null) continue; // 已校验可达，此处仅为类型完备
+        const candidateCost = prevCost + leg;
         const candidateSeq = [...bestSeq[prevMask][j]!, required[last]];
         if (
+          cost === null ||
           candidateCost < cost ||
           (candidateCost === cost && (seq === null || compareValveLists(candidateSeq, seq) < 0))
         ) {
@@ -2489,12 +2525,19 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
 
   // 闭合路线：最后一个阀门操作完返回出发点；返程不操作阀门，同耗时仍按完整序列字典序取舍
   const fullMask = size - 1;
-  let total = Infinity;
+  let total: bigint | null = null;
   let order: string[] = [];
   for (let last = 0; last < n; last++) {
-    const candidateCost = bestCost[fullMask][last] + dist[valveIdx[last]][sIdx];
+    const prevCost = bestCost[fullMask][last];
+    const back = dist[valveIdx[last]][sIdx];
+    if (prevCost === null || back === null) continue; // 已校验可达，此处仅为类型完备
+    const candidateCost = prevCost + back;
     const candidateSeq = bestSeq[fullMask][last]!;
-    if (candidateCost < total || (candidateCost === total && compareValveLists(candidateSeq, order) < 0)) {
+    if (
+      total === null ||
+      candidateCost < total ||
+      (candidateCost === total && compareValveLists(candidateSeq, order) < 0)
+    ) {
       total = candidateCost;
       order = candidateSeq;
     }
@@ -2518,7 +2561,8 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
       to: passage.waypoints[to],
       valve: chain[i].valve,
       path: shortestPath(from, to).map((p) => passage.waypoints[p]),
-      minutes: dist[from][to],
+      // 精确分钟值：安全范围内为 number，超出时为完整十进制字符串
+      minutes: exactMinutesOutput(dist[from][to]!),
     });
   }
 
@@ -2529,7 +2573,8 @@ export function planClosureRoute(query: ClosureRouteQuery): ClosureRouteResult {
     valveOrder: order,
     valveWaypoints: valveWaypointsResult,
     segments,
-    totalMinutes: total,
+    // 总耗时与各段共用同一套 BigInt 精确计算，此处仅做输出换算
+    totalMinutes: exactMinutesOutput(total!),
   };
 }
 

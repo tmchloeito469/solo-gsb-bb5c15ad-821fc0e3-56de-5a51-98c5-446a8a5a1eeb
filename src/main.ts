@@ -1474,12 +1474,22 @@ function renderClosureRoute(result: ClosureRouteResult): void {
     })
     .join('');
 
+  // 大分钟结果：任一耗时超出 Number 安全整数范围时以完整十进制字符串返回，逐位精确展示
+  const hasBigMinutes =
+    typeof result.totalMinutes === 'string' || result.segments.some((s) => typeof s.minutes === 'string');
+
   closureRouteResultEl.innerHTML = `
     <div class="banner success">
       已选方案的 ${result.requiredValveCount} 个必访阀门全部可达；最优完整路线总步行
       <strong>${result.totalMinutes}</strong> 分钟（从 <code>${escapeHtml(result.start)}</code> 出发并返回）。
       同耗时按关阀操作的阀门编号序列字典序取最小。
     </div>
+    ${
+      hasBigMinutes
+        ? `<p class="hint">分钟数超出 Number 安全整数范围：本路线的最短路、访问顺序优化与逐段 / 总耗时
+           全程按精确整数计算，结果以<strong>完整十进制数字</strong>逐位展示，未经舍入。</p>`
+        : ''
+    }
     <h3>阀门操作顺序</h3>
     <p>
       ${result.valveOrder
